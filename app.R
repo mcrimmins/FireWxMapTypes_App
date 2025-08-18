@@ -15,16 +15,16 @@ library(shinythemes)
 message("Loading data...")
 
 # Load data
-load("./Data/FOD.RData")
-fc <- sf::st_drop_geometry(fc)
+load("./Data/FODthin.Rdata")
+#fc <- sf::st_drop_geometry(fc)
 us_states <- map_data("state")
 us_states$region <- tools::toTitleCase(us_states$region)
 
 gh500 <- terra::rast("./Data/R2_hgt_500mb_1992_2020_CONUS.tif")
 gh700 <- terra::rast("./Data/R2_hgt_700mb_1992_2020_CONUS.tif")
-precip90<-terra::rast("./Data/CPC_Global_precip_90dyPercAvg_1992_2020_CONUS.tif")
+precip90<-terra::rast("./Data/CPC_Global_precip_90dyPercAvg_1992_2020_CONUS_INT.tif")
 #precip30<-terra::rast("./Data/CPC_Global_precip_30dyPercAvg_1992_2020_CONUS.tif")
-precip14<-terra::rast("./Data/CPC_Global_precip_14dyPercAvg_1992_2020_CONUS.tif")
+precip14<-terra::rast("./Data/CPC_Global_precip_14dyPercAvg_1992_2020_CONUS_INT.tif")
 
 # Adjust fire dates
 fc$DISCOVERY_DATE <- as.Date(fc$DISCOVERY_DATE, "%m/%d/%Y")
