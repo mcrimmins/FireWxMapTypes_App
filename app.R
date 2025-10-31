@@ -20,8 +20,12 @@ load("./Data/FODthin.Rdata")
 us_states <- map_data("state")
 us_states$region <- tools::toTitleCase(us_states$region)
 
+# Load geopotential height and precipitation data
+# look for data and helper scripts in /RProjects/FireWeatherScratch
+# use getNARR_8xday.R to update/generate R2 data
 gh500 <- terra::rast("./Data/R2_hgt_500mb_1992_2020_CONUS.tif")
 gh700 <- terra::rast("./Data/R2_hgt_700mb_1992_2020_CONUS.tif")
+gh1000 <- terra::rast("./Data/R2_hgt_1000mb_1992_2020_CONUS.tif")
 precip90<-terra::rast("./Data/CPC_Global_precip_90dyPercAvg_1992_2020_CONUS_INT.tif")
 #precip30<-terra::rast("./Data/CPC_Global_precip_30dyPercAvg_1992_2020_CONUS.tif")
 precip14<-terra::rast("./Data/CPC_Global_precip_14dyPercAvg_1992_2020_CONUS_INT.tif")
@@ -53,7 +57,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       selectInput("states", "Select States:", choices = sort(unique(fc$STATE)), multiple = TRUE, selected = "AZ"),
-      selectInput("height_level", "Select Geopotential Height Level:", choices = c("500mb" = "gh500", "700mb" = "gh700")),
+      selectInput("height_level", "Select Geopotential Height Level:", choices = c("500mb" = "gh500", "700mb" = "gh700", "1000mb" = "gh1000"), selected = "gh500"),
       radioButtons(
         inputId = "precip_type",
         label = "Select % of Avg Precipitation Period:",
@@ -206,7 +210,16 @@ server <- function(input, output, session) {
     fireData$Date <- factor(fireData$DISCOVERY_DATE, levels = selectDays)
     
     # subset geopotential height data
-    ghData <- if (input$height_level == "gh500") gh500 else gh700
+    #ghData <- if (input$height_level == "gh500") gh500 else gh700
+    ##### adding 1000mb option
+    ghData <- if (input$height_level == "gh500") {
+      gh500
+    } else if (input$height_level == "gh700") {
+      gh700
+    } else if (input$height_level == "gh1000") {
+      gh1000
+    }
+    ######
     ghSub <- ghData[[which(time(ghData) %in% selectDays)]]
     names(ghSub) <- time(ghSub)
     gh_df <- as.data.frame(ghSub, xy = TRUE) %>%
