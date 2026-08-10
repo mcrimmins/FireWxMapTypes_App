@@ -116,10 +116,19 @@ source("util/era5_common.R")   # setup_cds, msg, need_pkgs, G0, require_project_
 # actual reason, which is how a cost-limit rejection gets misdiagnosed.
 need_pkgs(c("ecmwfr", "ncdf4", "xml2"))
 
+# Plausibility bands. These only warn — they exist to catch a unit error or a
+# corrupted file, not to gate the build.
+#
+# soilw: physically 0-1, but the lower bound is -0.01 because server-side
+# regridding from 0.25 deg to 1.0 deg interpolates, and interpolation near a
+# hard floor undershoots it. Measured on 2020: min -0.0048 m3/m3, which is 0.5%
+# of the range and clearly numerical rather than physical. Phase 2 (gridpack.R)
+# should CLAMP to [0, 1] before quantising rather than encode a negative
+# volumetric water content.
 RANGES <- list(
   z_500 = c(4500, 6100), z_700 = c(2400, 3400), z_1000 = c(-500, 600),
   gust = c(0, 120), cape = c(0, 12000), t2 = c(200, 340),
-  d2 = c(180, 320), pwat = c(0, 100), soilw = c(0, 1))
+  d2 = c(180, 320), pwat = c(0, 100), soilw = c(-0.01, 1))
 
 # ============================ requests =======================================
 
