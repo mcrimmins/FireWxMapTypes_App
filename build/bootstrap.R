@@ -33,18 +33,49 @@ if (!identical(prof, "build"))
 
 # Posit Package Manager serves prebuilt Linux binaries when the URL names the
 # distribution. Without the /__linux__/<codename>/ segment you get source
-# tarballs and terra takes ~20 minutes to compile against GDAL. Detect the
-# codename rather than hardcoding it.
-repo <- "https://packagemanager.posit.co/cran/latest"
+# tarballs and terra takes ~20 minutes to compile against GDAL.
+#
+# Two things went wrong here the first time and both are guarded now:
+#   * the codename parse must not use a regex back-reference — R's default TRE
+#     engine fails to match \1 against an empty capture group, so the sub()
+#     silently returned the whole line and the URL became
+#     .../__linux__/VERSION_CODENAME=resolute/latest
+#   * PPM does not carry every codename the moment Ubuntu ships it. A missing
+#     repo fails as "error code 22" and then "package 'ecmwfr' is not available",
+#     which does not point at the URL at all. So probe it before trusting it.
+generic <- "https://packagemanager.posit.co/cran/latest"
+repo <- generic
+
+codename <- NA_character_
 if (.Platform$OS.type == "unix" && file.exists("/etc/os-release")) {
   osr <- readLines("/etc/os-release", warn = FALSE)
-  cn  <- sub('^VERSION_CODENAME=("?)([^"]*)\\1$', "\\2",
-             grep("^VERSION_CODENAME=", osr, value = TRUE))
-  if (length(cn) == 1 && nzchar(cn))
-    repo <- sprintf("https://packagemanager.posit.co/cran/__linux__/%s/latest", cn)
+  ln  <- grep("^VERSION_CODENAME=", osr, value = TRUE)[1]
+  if (!is.na(ln)) codename <- gsub('"', "", sub("^VERSION_CODENAME=", "", ln))
+}
+
+repo_exists <- function(url) {
+  # HEAD, so this costs one round trip and downloads nothing.
+  isTRUE(tryCatch(
+    system2("curl", c("-fsI", "--max-time", "15",
+                      shQuote(paste0(url, "/src/contrib/PACKAGES.rds"))),
+            stdout = FALSE, stderr = FALSE) == 0L,
+    error = function(e) FALSE))
+}
+
+if (!is.na(codename) && nzchar(codename)) {
+  cand <- sprintf("https://packagemanager.posit.co/cran/__linux__/%s/latest", codename)
+  if (repo_exists(cand)) {
+    repo <- cand
+  } else {
+    cat("NOTE: PPM has no binary repository for '", codename, "'.\n",
+        "      Falling back to source packages — terra will compile, ",
+        "allow ~20 min.\n", sep = "")
+  }
 }
 options(repos = c(CRAN = repo))
-cat("repos: ", repo, "\n", sep = "")
+cat("distro codename: ", if (is.na(codename)) "unknown" else codename, "\n", sep = "")
+cat("repos:           ", repo, "\n", sep = "")
+cat("binaries:        ", if (identical(repo, generic)) "no (source)" else "yes", "\n\n", sep = "")
 
 # ecmwfr   >= 2.0  CDS API client (pulls in keyring, httr2)
 # ncdf4            reads the netCDF the CDS returns; needs libnetcdf-dev
