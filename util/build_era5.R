@@ -304,8 +304,19 @@ fetch_jobs <- function(jobs, user) {
   msg("Fetched ", format(round(sum(nf)), big.mark = ","), " fields in ",
       round(el_s / 60), " min (", round(sum(nf) / el_s, 1), " fields/s)")
   still <- pending_jobs(jobs)
-  if (length(still))
-    msg(length(still), " still missing. Re-run build_main() — completed files are skipped.")
+  if (length(still)) {
+    # ecmwfr collapses every server-side rejection into one message: "Request has
+    # failed, please check the online request queue for more details!" — which
+    # means the actual reason (cost limit, licence, malformed key, transient
+    # adaptor fault) is only visible in the web queue. Name the jobs and the URL
+    # rather than leaving the reader to reconstruct both from the scrollback.
+    msg(length(still), " still missing: ",
+        paste(vapply(still, `[[`, character(1), "id"), collapse = ", "))
+    msg("  Reason is not in this log — ecmwfr does not surface it. See:")
+    msg("    https://cds.climate.copernicus.eu/requests")
+    msg("  Re-running resumes: completed files are skipped on an integrity")
+    msg("  check, so only these are re-requested.")
+  }
   invisible(length(still) == 0)
 }
 
@@ -504,15 +515,24 @@ build_main <- function() {
   # heights and orography keep their own verification (R3, R8)
   msg("Verifying pressure-level files ...")
   hj <- Filter(function(j) identical(j$kind, "pressure") && file_ok(j), jobs)
-  hp <- do.call(rbind, lapply(hj[seq_len(min(3, length(hj)))], function(j) {
-    g <- read_nc_cells(j$path); h <- g$arr / G0
-    data.frame(job = j$id, nx = length(g$lon), ny = length(g$lat),
-               dx = abs(diff(sort(g$lon))[1]),
-               lon_ok = !any(g$lon > 180),
-               hmin = round(min(h, na.rm = TRUE)), hmax = round(max(h, na.rm = TRUE)),
-               stringsAsFactors = FALSE)
-  }))
-  print(hp, row.names = FALSE)
+  if (!length(hj)) {
+    # Previously this fell through to print(NULL), which renders as a bare "NULL"
+    # in the log and reads like a crash rather than "the height request failed
+    # and there is nothing to check".
+    msg("  none present — the pressure-level request(s) did not complete.")
+    msg("  R3 (geopotential -> height) and R8 (longitude convention) are ",
+        "therefore UNVERIFIED.")
+  } else {
+    hp <- do.call(rbind, lapply(hj[seq_len(min(3, length(hj)))], function(j) {
+      g <- read_nc_cells(j$path); h <- g$arr / G0
+      data.frame(job = j$id, nx = length(g$lon), ny = length(g$lat),
+                 dx = abs(diff(sort(g$lon))[1]),
+                 lon_ok = !any(g$lon > 180),
+                 hmin = round(min(h, na.rm = TRUE)), hmax = round(max(h, na.rm = TRUE)),
+                 stringsAsFactors = FALSE)
+    }))
+    print(hp, row.names = FALSE)
+  }
 
   if (!is.null(rep)) {
     cat("\n----- DAILY AGGREGATES -----\n"); print(rep, row.names = FALSE)
