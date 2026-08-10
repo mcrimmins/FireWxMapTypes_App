@@ -22,9 +22,11 @@ New files this adds:
 util/era5_common.R              helpers with no plotting dependencies
 build/setup_server.sh           one-time server preparation
 build/bootstrap.R               installs the 6 build packages into the build profile
+build/selftest.R                30-second readiness check, including a live ntfy test
 build/run_phase1.R              unattended entry point, exit codes, error handling
 build/firewx-build.service      systemd user unit
 build/firewx-notify-fail.service  OnFailure notifier
+build/install_system_unit.sh    fallback: run as a system service, no user bus needed
 build/pull_results.ps1          laptop-side transfer
 SERVER_SETUP.md                 this file
 ```
@@ -111,6 +113,42 @@ outage brings the machine back and systemd resumes on its own.
 your SSH session. Without it the unit is killed at logout, which is precisely
 the failure this whole exercise is meant to prevent.
 
+### If `systemctl --user` cannot find the bus
+
+```
+Failed to connect to user scope bus via local transport:
+$DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined
+```
+
+`systemctl --user` locates the per-user bus through `XDG_RUNTIME_DIR`, which
+`pam_systemd` sets on a normal login. It is *not* set if you reached the shell
+via `su - user` from root, or any other path that does not create a logind
+session. Enabling lingering does not retrofit it onto a session that already
+exists.
+
+Nearly always the fix is to log out and SSH back in as that user directly:
+
+```bash
+exit
+ssh crimmins@nimbus
+echo "$XDG_RUNTIME_DIR"          # expect /run/user/1000
+systemctl --user daemon-reload
+```
+
+If `/run/user/$(id -u)` does not exist at all, the session is not a logind
+session and no amount of exporting will help. Either log in over SSH directly,
+or install as a system unit instead:
+
+```bash
+sudo bash build/install_system_unit.sh
+```
+
+That needs neither `XDG_RUNTIME_DIR` nor lingering, and starts at boot whether
+or not anyone has logged in. The service still runs as your user, from your home
+directory, reading your `.Renviron` — only the manager differs. Every command in
+this document then drops `--user` and gains `sudo`:
+`sudo systemctl start firewx-build`, `sudo journalctl -u firewx-build -f`.
+
 ### Secrets
 
 `~/FireWxMapTypes_App/.Renviron` on the server — gitignored already, verify with
@@ -159,23 +197,46 @@ plaintext keyring file on disk is only a liability.
 
 ---
 
-## 3. Smoke test before committing 21 hours
+## 3. Test before committing 21 hours
+
+Three levels, cheapest first. Do them in order.
 
 ```bash
 cd ~/FireWxMapTypes_App
-Rscript build/run_phase1.R --dry-run     # prints the plan, submits nothing
-Rscript build/run_phase1.R 2020          # one year, ~36 min, in the foreground
+Rscript build/selftest.R                 # ~30 s, no CDS retrieval
+Rscript build/selftest.R --cds           # + one tiny real request, ~1 min
+Rscript build/run_phase1.R 2020          # one year, ~36 min, foreground
 ```
 
-The dry run exercises the whole path — project root check, package check, job
-construction — without touching the CDS. The single-year run additionally
-exercises CDS auth, the keyring path above, netCDF reading, aggregation and the
-ntfy notifications. Watch for the "headless Linux detected" line; if it is
-missing on the server, the keyring detection did not fire and you want to know
-before the long run.
+**`selftest.R`** is the one that matters. It checks the things that differ
+between the laptop this was written on and a headless Ubuntu box, and each check
+prints PASS / WARN / FAIL:
 
-Run it inside `tmux` if you like — for a 36-minute foreground job that is what
-tmux is good for.
+- `.Renviron` actually loaded (empty `CDS_KEY` with the file present means R was
+  started from the wrong directory — the most common silent failure here)
+- packages and versions, with `xml2` called out by name
+- a netCDF write/read round trip, which is the real test of `libnetcdf-dev`
+- free disk against the ~9 GB peak, and RAM against the ~2 GB aggregation peak
+- **the MST day-boundary assertion**, evaluated on the machine rather than assumed
+- **a real ntfy notification** — if it arrives on your phone, the entire alert
+  path works, including the systemd `OnFailure` hook
+- `setup_cds()` **under a 60-second time limit**, which converts the keyring hang
+  described above from an unattended run stuck forever into a reported failure
+  with the fix printed underneath
+- CDS reachability and token acceptance
+
+`--cds` adds one four-cell, one-hour retrieval. That is the only check that
+proves **ERA5 licence acceptance**, which the HTTP preflight cannot see.
+
+`run_phase1.R --dry-run` still exists and prints the request plan, but it touches
+neither CDS nor ntfy — `selftest.R` supersedes it as a readiness check.
+
+Watch for the "headless Linux detected" line during `setup_cds()`. If it is
+missing on the server, the keyring detection did not fire, and you want to know
+that now rather than at the start of a 21-hour run.
+
+Run the 36-minute smoke test inside `tmux` if you like — for a foreground job of
+that length, that is what tmux is good for.
 
 ---
 
@@ -195,7 +256,7 @@ the full ~7 GB, because aggregation reads all years of a variable in one pass.)
 | Code | Meaning | Systemd |
 |---|---|---|
 | 0 | everything present and aggregated | stops, clean |
-| 1 | unhandled R error | stops, fires `OnFailure` → urgent ntfy |
+| 1 | unhandled R error | `RestartPreventExitStatus=1` → straight to failed, `OnFailure` → urgent ntfy |
 | 2 | finished but requests outstanding | restarts after 5 min, resumes |
 
 Exit 2 is the interesting one. A failed CDS request is routine, and the build is

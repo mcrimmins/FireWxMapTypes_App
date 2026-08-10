@@ -27,6 +27,14 @@ Wants=network-online.target
 # script cannot report itself — an OOM kill, a SIGKILL, a segfault in ncdf4.
 OnFailure=firewx-notify-fail.service
 
+# Do not restart more than 10 times in 24 h. Without this a persistent failure
+# (expired token, revoked licence) becomes an infinite loop hammering the CDS,
+# which is a good way to get an account suspended.
+# These belong in [Unit], not [Service] — systemd moved them in v229 and silently
+# ignores them with an "Unknown key name" warning if they are in the wrong place.
+StartLimitIntervalSec=86400
+StartLimitBurst=10
+
 [Service]
 Type=simple
 WorkingDirectory=@REPO@
@@ -42,16 +50,17 @@ Environment=OMP_NUM_THREADS=2
 
 # Exit 2 means "finished, but requests are still outstanding" — a transient CDS
 # failure, not a bug. Restart and let the integrity check skip what is already
-# done. Exit 1 is a real error: stop and let OnFailure raise the alarm.
+# done.
+#
+# Exit 1 is an unhandled R error, which run_phase1.R has already reported by
+# ntfy. RestartPreventExitStatus=1 is what makes that stick: without it,
+# Restart=on-failure treats ANY non-zero exit as retryable, so a hard error would
+# be retried ten times over 24 h before the unit finally entered failed state and
+# OnFailure fired. That is not what section 4 of SERVER_SETUP.md describes, and
+# it would delay the alarm by most of a day.
 Restart=on-failure
-RestartForceExitStatus=2
-SuccessExitStatus=0
+RestartPreventExitStatus=1
 RestartSec=300
-# Do not restart more than 10 times in 24 h. Without this a persistent failure
-# (expired token, revoked licence) becomes an infinite loop hammering the CDS,
-# which is a good way to get an account suspended.
-StartLimitIntervalSec=86400
-StartLimitBurst=10
 
 # The R process is single-threaded and I/O bound; keep it from starving the box.
 Nice=5

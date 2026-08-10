@@ -55,7 +55,9 @@ say "3. Disk space"
 # find out now rather than at hour 14.
 df -h /
 if command -v vgs >/dev/null 2>&1; then
-    vgs || true
+    # sudo only — an unprivileged vgs prints a confusing "Permission denied" on
+    # /run/lock/lvm and reports nothing useful.
+    sudo vgs 2>/dev/null || true
     FREE=$(sudo vgs --noheadings -o vg_free --units g 2>/dev/null | tr -d ' g' | head -1 || echo 0)
     if [ "${FREE%%.*}" -gt 5 ] 2>/dev/null; then
         warn "${FREE}G is unallocated in the volume group. To claim it:"
@@ -110,8 +112,35 @@ sed "s|@REPO@|$REPO|g" "$REPO/build/firewx-build.service" \
     > "$HOME/.config/systemd/user/firewx-build.service"
 cp "$REPO/build/firewx-notify-fail.service" "$HOME/.config/systemd/user/"
 sed -i "s|@REPO@|$REPO|g" "$HOME/.config/systemd/user/firewx-notify-fail.service"
-systemctl --user daemon-reload
 echo "installed: firewx-build.service, firewx-notify-fail.service"
+
+# `systemctl --user` needs XDG_RUNTIME_DIR to find the per-user bus. pam_systemd
+# sets it for a normal login, but NOT if you reached this shell via `su - user`
+# from root, or through any other path that does not create a logind session.
+# The symptom is:
+#   Failed to connect to user scope bus via local transport:
+#   $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    warn "XDG_RUNTIME_DIR was unset; using $XDG_RUNTIME_DIR for this script only."
+    echo "     Add it to ~/.bashrc, or just log out and ssh back in — a fresh"
+    echo "     login sets it properly and it will stick."
+fi
+
+if systemctl --user daemon-reload 2>/dev/null; then
+    echo "systemd user manager reachable"
+else
+    warn "Cannot reach the systemd user bus. The unit FILES are installed; only"
+    echo "     daemon-reload did not run. Diagnose and finish with:"
+    echo "         id -u; ls -ld /run/user/\$(id -u); loginctl session-status"
+    echo "         exit    # then ssh back in, and:"
+    echo "         systemctl --user daemon-reload"
+    echo "     If /run/user/\$(id -u) does not exist at all, this shell is not a"
+    echo "     logind session (typically: you got here via 'su -' from root)."
+    echo "     Log in directly over SSH as this user instead."
+    echo "     Fallback if the user bus stays broken — install as a SYSTEM unit:"
+    echo "         sudo bash $REPO/build/install_system_unit.sh"
+fi
 
 say "Next steps"
 cat <<EOF
