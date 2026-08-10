@@ -136,12 +136,22 @@ if (inherits(lic, "error")) {
   cat("could not query: ", conditionMessage(lic), "\n", sep = "")
 } else {
   txt <- httr::content(lic, "text", encoding = "UTF-8")
-  cat("HTTP ", httr::status_code(lic), "\n", sep = "")
-  cat(substr(txt, 1, 1500), "\n")
-  if (grepl('"accepted"\\s*:\\s*false', txt))
-    cat("\n>>> A licence for this dataset is NOT accepted — that is the failure.\n",
-        ">>> https://cds.climate.copernicus.eu/datasets/",
-        base_req$dataset_short_name, "?tab=download\n", sep = "")
+  code <- httr::status_code(lic)
+  cat("HTTP ", code, "\n", sep = "")
+  if (code == 404) {
+    # Verified 2026-08-10: this path is not exposed on the current CDS build.
+    # A 404 here says nothing about licence status — do not read it as a problem.
+    cat("  (no per-dataset licence endpoint on this CDS build — this 404 is\n",
+        "   not a finding. Check acceptance in the web UI if a 403 appears below:\n",
+        "     https://cds.climate.copernicus.eu/datasets/",
+        base_req$dataset_short_name, "?tab=download )\n", sep = "")
+  } else {
+    cat(substr(txt, 1, 1500), "\n")
+    if (grepl('"accepted"\\s*:\\s*false', txt))
+      cat("\n>>> A licence for this dataset is NOT accepted — that is the failure.\n",
+          ">>> https://cds.climate.copernicus.eu/datasets/",
+          base_req$dataset_short_name, "?tab=download\n", sep = "")
+  }
 }
 
 # ============================ single or ladder ===============================
@@ -194,5 +204,10 @@ cat("\nHow to read this:\n",
     "  4 passes, 1 fails -> the netCDF conversion. Pull GRIB and read with terra.\n",
     "  5 passes, others fail -> only single-day works; phase 0 was not representative.\n",
     "  all fail -> not the request shape. Licence, account, or a CDS-side fault:\n",
-    "              https://status.ecmwf.int/ and the CDS forum.\n", sep = "")
+    "              https://status.ecmwf.int/ and the CDS forum.\n",
+    "  ALL PASS, including 1 -> the request is fine and the earlier failure was\n",
+    "              transient CDS-side. This happened on 2026-08-10: variant 1 is\n",
+    "              byte-identical to a request that had failed twice 30 minutes\n",
+    "              before. Nothing to fix; BCFG$retry_passes exists for this.\n",
+    sep = "")
 quit(status = 0L, save = "no")

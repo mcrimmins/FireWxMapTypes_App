@@ -101,10 +101,22 @@ BCFG <- list(
                         # ~12 jobs is ~1 h at the measured rate, which makes
                         # silence itself the failure signal: no message for two
                         # hours means the run is stuck or the box is gone.
-  fail_streak  = 3      # consecutive failed jobs before a high-priority alert.
+  fail_streak  = 3,     # consecutive failed jobs before a high-priority alert.
                         # One failure is a transient CDS hiccup and the run is
                         # resumable; three in a row is a real problem (expired
                         # token, licence revoked, disk full).
+
+  # MEASURED 2026-08-10: the CDS failed two unrelated requests (one
+  # pressure-level, one single-level) inside a ~20 minute window, then accepted
+  # byte-identical payloads afterwards — confirmed by submitting them straight to
+  # the REST API with build/diagnose_cds.R, which got 5/5 successes on the exact
+  # shape that had just failed twice. Transient server-side failure is normal
+  # operation, not an exception.
+  #
+  # Without these passes, one such blip costs a full systemd restart cycle. Over
+  # 232 requests that is a lot of churn for something that clears in minutes.
+  retry_passes = 2,     # extra passes over whatever is still missing
+  retry_wait_s = 180    # pause before each, to let a CDS wobble pass
 )
 
 # Helpers only — no plotting stack. See util/era5_common.R for why this is not
@@ -306,6 +318,23 @@ fetch_jobs <- function(jobs, user) {
         i, length(todo), 100 * done_f / sum(nf), fmt_dur(el * 60),
         if (is.na(rem)) "?" else fmt_dur(rem * 60),
         disk_line(), n_fail))
+    }
+  }
+
+  # --- retry passes ----------------------------------------------------------
+  # Cheap, bounded, and in-run: a CDS blip that clears in minutes should not need
+  # a systemd restart to recover from. Deliberately NOT an inner retry loop
+  # around fetch_one() — pausing between whole passes gives a struggling adaptor
+  # time to recover, where an immediate retry would just fail again.
+  for (pass in seq_len(BCFG$retry_passes %||% 0)) {
+    left <- pending_jobs(jobs)
+    if (!length(left)) break
+    msg("retry pass ", pass, "/", BCFG$retry_passes, ": ", length(left),
+        " job(s) outstanding — waiting ", BCFG$retry_wait_s, "s first")
+    Sys.sleep(BCFG$retry_wait_s)
+    for (j in left) {
+      msg("  retry ", j$id)
+      fetch_one(j, user)
     }
   }
 
