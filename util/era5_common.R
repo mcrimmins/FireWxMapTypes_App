@@ -39,8 +39,18 @@ HGT_RANGE <- list(
 # flush() matters on the server: when stdout is a pipe rather than a terminal it
 # is block-buffered, so without this a `journalctl -f` shows nothing for minutes
 # and a run that is working looks like a run that has hung.
+#
+# Arguments are coerced with as.character() rather than handed straight to cat().
+# cat() rejects anything list-like with "argument N (type 'list') cannot be
+# handled by 'cat'" — and several perfectly ordinary things are list-like,
+# including getRversion() and packageVersion(), both of which print fine
+# everywhere else. A logging call that kills the run it is logging is a bad
+# trade for a microsecond.
 msg <- function(...) {
-  cat(format(Sys.time(), "[%Y-%m-%d %H:%M:%S] "), ..., "\n", sep = "")
+  parts <- vapply(list(...),
+                  function(a) paste(as.character(a), collapse = " "),
+                  character(1))
+  cat(format(Sys.time(), "[%Y-%m-%d %H:%M:%S] "), parts, "\n", sep = "")
   try(flush(stdout()), silent = TRUE)
   invisible(NULL)
 }

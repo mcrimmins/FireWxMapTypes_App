@@ -54,7 +54,7 @@ if (length(yrs_arg)) {
 if (!dry && length(BCFG$years) > 3) BCFG$keep_hourly <- FALSE
 
 msg("=== phase 1 run starting ===")
-msg("host ", Sys.info()[["nodename"]], " | R ", getRversion(),
+msg("host ", Sys.info()[["nodename"]], " | R ", as.character(getRversion()),
     " | TZ ", Sys.timezone(), " | pid ", Sys.getpid())
 msg("years ", min(BCFG$years), "-", max(BCFG$years),
     " | dry_run ", BCFG$dry_run, " | keep_hourly ", BCFG$keep_hourly,

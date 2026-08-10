@@ -231,10 +231,15 @@ if (n_fail > 0) {
     a4 <- if (length(v4)) sub("\\s.*", "", v4[1]) else NA_character_
     if (!is.na(a4)) ok("DNS (IPv4)", sprintf("%s -> %s", cdshost, a4))
     else bad("DNS (IPv4)", sprintf("cannot resolve %s", cdshost))
-    if (length(v6)) {
-      # A box with AAAA records but no working IPv6 route is the classic cause of
-      # a 10-second "Resolving timed out": curl prefers IPv6 and waits.
-      cat("        AAAA present: ", sub("\\s.*", "", v6[1]), "\n", sep = "")
+    # getent ahostsv6 also returns IPv4-mapped addresses (::ffff:a.b.c.d) for
+    # hosts with NO AAAA record at all, so their mere presence proves nothing.
+    # Only a genuine v6 address is worth warning about: a box with real AAAA
+    # records but no working IPv6 route is the classic cause of a 10-second
+    # "Resolving timed out", because curl prefers v6 and waits.
+    real6 <- if (length(v6)) grep("^::ffff:", sub("\\s.*", "", v6), invert = TRUE,
+                                  value = TRUE) else character()
+    if (length(real6)) {
+      cat("        real AAAA present: ", real6[1], "\n", sep = "")
       cat("        if HTTPS below fails but IPv4 DNS passed, prefer IPv4 system-wide:\n")
       cat("          echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf\n")
     }
