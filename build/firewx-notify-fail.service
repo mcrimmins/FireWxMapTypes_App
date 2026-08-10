@@ -1,0 +1,36 @@
+# build/firewx-notify-fail.service
+# -----------------------------------------------------------------------------
+# Triggered by OnFailure= in firewx-build.service. This is the last line of
+# defence: it reports failures the R script never got the chance to report —
+# an OOM kill, a segfault, a SIGKILL, an R interpreter that could not start.
+# The in-script notify_fail() covers ordinary R errors; this covers the process
+# dying without running any more R.
+#
+# Reads NTFY_TOPIC (and optionally NTFY_SERVER, NTFY_TOKEN) from the repo's
+# .Renviron so there is exactly one place secrets live.
+# -----------------------------------------------------------------------------
+
+[Unit]
+Description=Notify that the FireWx ERA5 build failed
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+ExecStart=/usr/bin/env bash -c '\
+  set -a; \
+  NTFY_SERVER=https://ntfy.sh; \
+  . <(grep -E "^(NTFY_TOPIC|NTFY_SERVER|NTFY_TOKEN)=" .Renviron | tr -d " "); \
+  set +a; \
+  [ -n "$${NTFY_TOPIC:-}" ] || exit 0; \
+  TAIL=$$(journalctl --user -u firewx-build -n 25 --no-pager -o cat | tail -c 1200); \
+  curl -fsS --max-time 20 \
+    -H "Title: FireWx build DIED" \
+    -H "Priority: urgent" \
+    -H "Tags: skull" \
+    $${NTFY_TOKEN:+-H "Authorization: Bearer $$NTFY_TOKEN"} \
+    -d "The service exited abnormally on $$(hostname) at $$(date -Is).\
+Last log lines:\
+$$TAIL\
+\
+Resume with: systemctl --user start firewx-build" \
+    "$$NTFY_SERVER/$$NTFY_TOPIC" >/dev/null'

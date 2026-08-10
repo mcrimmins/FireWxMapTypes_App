@@ -1,0 +1,71 @@
+# build/firewx-build.service
+# -----------------------------------------------------------------------------
+# systemd USER unit for the ERA5 phase 1 build. Installed by build/setup_server.sh
+# to ~/.config/systemd/user/ with @REPO@ substituted.
+#
+#   systemctl --user start   firewx-build     # begin (or resume) the run
+#   systemctl --user stop    firewx-build     # safe: the build is resumable
+#   systemctl --user status  firewx-build
+#   journalctl  --user -u    firewx-build -f  # live log
+#
+# Requires `loginctl enable-linger $USER`, otherwise the unit dies with your SSH
+# session — which is the whole problem this is here to solve.
+#
+# WHY A SERVICE AND NOT tmux/nohup
+# tmux survives a disconnect but not a reboot, gives no restart policy, no exit
+# code handling and no structured log. The three failure modes that matter over
+# 21 hours are a crashed process, a rebooted box, and a run that stopped without
+# telling anyone; a unit file covers all three and a detached shell covers none.
+# -----------------------------------------------------------------------------
+
+[Unit]
+Description=FireWxMapTypes ERA5 phase 1 acquisition
+Documentation=file://@REPO@/SERVER_SETUP.md
+After=network-online.target
+Wants=network-online.target
+# On failure, fire the notifier unit. This is the backstop for errors the R
+# script cannot report itself — an OOM kill, a SIGKILL, a segfault in ncdf4.
+OnFailure=firewx-notify-fail.service
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+# .Renviron is read from the working directory at R startup; that is where
+# CDS_KEY, NTFY_TOPIC and RENV_PROFILE live. Nothing secret belongs in this file.
+ExecStart=/usr/bin/Rscript build/run_phase1.R
+
+Environment=TZ=UTC
+Environment=LC_ALL=C.UTF-8
+# R would otherwise use every core for BLAS during aggregation and starve the
+# box; the work here is I/O bound anyway (CDS allows one concurrent request).
+Environment=OMP_NUM_THREADS=2
+
+# Exit 2 means "finished, but requests are still outstanding" — a transient CDS
+# failure, not a bug. Restart and let the integrity check skip what is already
+# done. Exit 1 is a real error: stop and let OnFailure raise the alarm.
+Restart=on-failure
+RestartForceExitStatus=2
+SuccessExitStatus=0
+RestartSec=300
+# Do not restart more than 10 times in 24 h. Without this a persistent failure
+# (expired token, revoked licence) becomes an infinite loop hammering the CDS,
+# which is a good way to get an account suspended.
+StartLimitIntervalSec=86400
+StartLimitBurst=10
+
+# The R process is single-threaded and I/O bound; keep it from starving the box.
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+# Guardrail, not a target: measured peak is ~1.5-2 GB. If it climbs past 6 GB
+# something has gone wrong in aggregation and it is better to fail loudly than
+# to take the machine down with it.
+MemoryMax=6G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=firewx-build
+
+[Install]
+WantedBy=default.target

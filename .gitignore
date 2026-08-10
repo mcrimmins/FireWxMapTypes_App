@@ -4,3 +4,4 @@
 .Ruserdata
 Data/*
 !Data/README.md
+.Renviron
