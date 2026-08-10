@@ -130,9 +130,12 @@ if (length(df) >= 2) {
   else bad("free space", sprintf("%.1f GB — need ~9 GB at peak", free_gb))
 } else warn("free space", "could not run df")
 
-mem <- tryCatch(as.numeric(sub(".*: *", "",
-  grep("^MemTotal", readLines("/proc/meminfo", warn = FALSE), value = TRUE))) / 1024^2,
-  error = function(e) NA_real_)
+# /proc/meminfo reads "MemTotal:  7449012 kB" — the units suffix has to go before
+# as.numeric(), or this is NA and the check silently never runs.
+mem <- tryCatch({
+  ml <- grep("^MemTotal", readLines("/proc/meminfo", warn = FALSE), value = TRUE)[1]
+  suppressWarnings(as.numeric(gsub("\\D", "", ml))) / 1024^2   # kB -> GiB
+}, error = function(e) NA_real_)
 if (!is.na(mem)) {
   # Aggregation holds all years of a variable's daily matrices before writing:
   # ~320 MB per statistic, gust carries two. Peak ~1.5-2 GB.
@@ -197,9 +200,15 @@ if (n_fail > 0) {
     # time limit here turns a hang into a reportable failure.
     r <- tryCatch({
       setTimeLimit(elapsed = 60, transient = TRUE)
-      on.exit(setTimeLimit(elapsed = Inf), add = TRUE)
       setup_cds(); TRUE
     }, error = function(e) e)
+    # Clear it EXPLICITLY. on.exit() does not help here — there is no function
+    # frame to attach to — and transient=TRUE only resets at the end of the
+    # current TOP-LEVEL expression, which is this entire section 8 block. Left
+    # in place, the 60 s budget silently applied to the CDS retrieval below and
+    # killed it with "reached elapsed time limit", which looks like a CDS fault
+    # and is not one.
+    setTimeLimit(elapsed = Inf)
     if (isTRUE(r)) {
       ok("setup_cds()", sprintf("keyring backend: %s",
                                 getOption("keyring_backend") %||% "default"))
@@ -211,9 +220,43 @@ if (n_fail > 0) {
             "          R_KEYRING_BACKEND=env\n", sep = "")
     }
 
-    if (isTRUE(tryCatch(preflight(), error = function(e) FALSE)))
+    # Separate DNS from HTTPS before running preflight(). "Resolving timed out"
+    # and "connection refused" have completely different fixes, and preflight()
+    # reports both as UNREACHABLE.
+    cdshost <- "cds.climate.copernicus.eu"
+    v4 <- tryCatch(system2("getent", c("ahostsv4", cdshost), stdout = TRUE,
+                           stderr = FALSE), error = function(e) character())
+    v6 <- tryCatch(system2("getent", c("ahostsv6", cdshost), stdout = TRUE,
+                           stderr = FALSE), error = function(e) character())
+    a4 <- if (length(v4)) sub("\\s.*", "", v4[1]) else NA_character_
+    if (!is.na(a4)) ok("DNS (IPv4)", sprintf("%s -> %s", cdshost, a4))
+    else bad("DNS (IPv4)", sprintf("cannot resolve %s", cdshost))
+    if (length(v6)) {
+      # A box with AAAA records but no working IPv6 route is the classic cause of
+      # a 10-second "Resolving timed out": curl prefers IPv6 and waits.
+      cat("        AAAA present: ", sub("\\s.*", "", v6[1]), "\n", sep = "")
+      cat("        if HTTPS below fails but IPv4 DNS passed, prefer IPv4 system-wide:\n")
+      cat("          echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf\n")
+    }
+
+    for (lbl in c("HTTPS (default)", "HTTPS (force IPv4)")) {
+      fl <- if (grepl("IPv4", lbl)) "-4" else "-s"
+      rc <- tryCatch(system2("curl", c(fl, "-o", "/dev/null", "-s", "--max-time", "20",
+                                       "-w", "%{http_code}",
+                                       shQuote(paste0("https://", cdshost, "/api/retrieve/v1/datasets"))),
+                             stdout = TRUE, stderr = FALSE), error = function(e) "")
+      code <- suppressWarnings(as.integer(rc[1]))
+      # 404 is fine: the endpoint is not public, but the server answered, which
+      # is all this check needs to establish.
+      if (!is.na(code) && code > 0) ok(lbl, sprintf("HTTP %d", code))
+      else bad(lbl, "no response")
+    }
+
+    if (isTRUE(tryCatch(preflight(), error = function(e) FALSE))) {
       ok("CDS reachable + token accepted")
-    else bad("CDS preflight", "see the output above")
+    } else {
+      bad("CDS preflight", "see the output above")
+    }
 
     if (do_cds) {
       # One hour, one variable, four grid cells. Seconds of MARS time. This is
