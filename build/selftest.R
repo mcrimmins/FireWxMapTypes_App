@@ -50,19 +50,31 @@ sect("2. Environment (.Renviron)")
 # way this setup fails silently.
 if (!file.exists(".Renviron")) bad(".Renviron", "not found in repo root")
 key <- Sys.getenv("CDS_KEY")
-if (nzchar(key)) ok("CDS_KEY", sprintf("%d chars", nchar(key)))
-else bad("CDS_KEY", "empty — is R being started from the repo root?")
+if (nzchar(key)) {
+  ok("CDS_KEY", sprintf("%d chars", nchar(key)))
+} else {
+  bad("CDS_KEY", "empty — is R being started from the repo root?")
+}
 
-if (ntfy_enabled()) ok("NTFY_TOPIC", sprintf("set (%d chars)", nchar(Sys.getenv("NTFY_TOPIC"))))
-else warn("NTFY_TOPIC", "unset — notifications will be silent no-ops")
+if (ntfy_enabled()) {
+  ok("NTFY_TOPIC", sprintf("set (%d chars)", nchar(Sys.getenv("NTFY_TOPIC"))))
+} else {
+  warn("NTFY_TOPIC", "unset — notifications will be silent no-ops")
+}
 
 prof <- Sys.getenv("RENV_PROFILE")
-if (identical(prof, "build")) ok("RENV_PROFILE", "build")
-else warn("RENV_PROFILE", sprintf("'%s' — expected 'build' on the server", prof))
+if (identical(prof, "build")) {
+  ok("RENV_PROFILE", "build")
+} else {
+  warn("RENV_PROFILE", sprintf("'%s' — expected 'build' on the server", prof))
+}
 
 lp <- .libPaths()[1]
-if (grepl("profiles/build", lp, fixed = TRUE)) ok("active library", lp)
-else warn("active library", lp)
+if (grepl("profiles/build", lp, fixed = TRUE)) {
+  ok("active library", lp)
+} else {
+  warn("active library", lp)
+}
 
 # --- 3. packages -------------------------------------------------------------
 sect("3. R packages")
@@ -136,9 +148,11 @@ sect("6. Timezone (D9, MST = constant UTC-7)")
 # the machine rather than assuming.
 t_utc <- as.POSIXct("2020-07-15 06:00:00", tz = "UTC")   # 23:00 MST on the 14th
 got   <- as.Date(t_utc + (-7) * 3600)
-if (identical(got, as.Date("2020-07-14")))
+if (identical(got, as.Date("2020-07-14"))) {
   ok("MST day boundary", "06Z -> local 14 Jul, TZ-independent")
-else bad("MST day boundary", sprintf("got %s, expected 2020-07-14", got))
+} else {
+  bad("MST day boundary", sprintf("got %s, expected 2020-07-14", got))
+}
 ok("system timezone", Sys.timezone() %||% "unset")
 
 # --- 7. ntfy -----------------------------------------------------------------
