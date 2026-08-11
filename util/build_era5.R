@@ -298,6 +298,26 @@ fetch_jobs <- function(jobs, user) {
   todo <- pending_jobs(jobs)
   msg(length(jobs), " jobs total; ", length(todo), " to fetch.")
   if (!length(todo)) return(invisible(TRUE))
+
+  # SMALLEST FIRST. Not for throughput — for risk.
+  #
+  # build_jobs() emits in variable order, which front-loads the two 24 h/day
+  # variables (gust, cape) at 8,766 fields each and leaves the cheap ones for
+  # last. MEASURED 2026-08-11: with CDS queue waits at ~2 h per request, that
+  # ordering means a run abandoned partway through has NOTHING complete except
+  # heights, because every variable is either fully done or not started.
+  #
+  # Ascending by size instead: 1,096-field heights, then the 4 h/day variables,
+  # then 8 h/day, then the two 24 h/day sets. Whole variables finish sooner, so
+  # an interrupted or abandoned run leaves a usable archive rather than a
+  # half-built one — and any request that failed earlier gets retried first,
+  # because a re-run's pending list is dominated by the cheap ones.
+  #
+  # Side effect: the fields/s ETA reads pessimistic early. Per-request overhead
+  # is roughly constant, so small jobs deliver fewer fields per second; the
+  # estimate improves as the run reaches the larger variables.
+  todo <- todo[order(vapply(todo, function(j) j$nfields, numeric(1)))]
+
   t0 <- Sys.time()
   nf   <- vapply(todo, function(j) j$nfields, numeric(1))
   done_f <- 0
