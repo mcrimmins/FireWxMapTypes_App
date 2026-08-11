@@ -1,5 +1,6 @@
 Data/scratch
 Data/era5_raw
+Data/fod_raw
 oldVersions
 util
 ERA5_MIGRATION_SCOPE.md

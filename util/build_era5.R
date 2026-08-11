@@ -101,6 +101,18 @@ BCFG <- list(
                         # ~12 jobs is ~1 h at the measured rate, which makes
                         # silence itself the failure signal: no message for two
                         # hours means the run is stuck or the box is gone.
+
+  # ...except that a job count is the wrong clock. MEASURED 2026-08-11: fetch
+  # rate fell from ~49 fields/s overnight to a crawl during European working
+  # hours as the CDS queue filled, and 12 jobs took nine hours instead of one.
+  # A count-based heartbeat stretches exactly when the run slows down — which is
+  # precisely when you want to hear from it. So also fire on elapsed time.
+  #
+  # Honest limit: this is checked between jobs, so a single job that hangs for
+  # its full 7200 s wf_request timeout still produces no heartbeat until it
+  # returns. Bounding that properly would need a watchdog thread; the journal
+  # line printed BEFORE each fetch is the fallback for that case.
+  notify_max_gap_min = 75,
   fail_streak  = 3,     # consecutive failed jobs before a high-priority alert.
                         # One failure is a transient CDS hiccup and the run is
                         # resumable; three in a row is a real problem (expired
@@ -116,7 +128,17 @@ BCFG <- list(
   # Without these passes, one such blip costs a full systemd restart cycle. Over
   # 232 requests that is a lot of churn for something that clears in minutes.
   retry_passes = 2,     # extra passes over whatever is still missing
-  retry_wait_s = 180    # pause before each, to let a CDS wobble pass
+  retry_wait_s = 180,   # pause before each, to let a CDS wobble pass
+
+  # How long to let ONE request sit before giving up on it.
+  #
+  # Was 7200 s. MEASURED 2026-08-11: gust_2019 hit exactly 7200 s and was
+  # abandoned — CDS queue waits had grown from ~7 min per job overnight to ~2 h
+  # during European working hours. Abandoning at the timeout is the worst
+  # possible move: the server-side job keeps running, our queue position is
+  # thrown away, and the retry submits a NEW request that starts at the back of
+  # the queue. Waiting is nearly free; re-queuing is not.
+  request_timeout_s = 21600   # 6 h
 )
 
 # Helpers only — no plotting stack. See util/era5_common.R for why this is not
@@ -255,7 +277,7 @@ fetch_one <- function(job, user) {
   before <- list.files(BCFG$raw_dir, full.names = TRUE)
   args <- list(request = c(job$req, list(target = basename(job$path))),
                transfer = TRUE, path = BCFG$raw_dir, verbose = FALSE,
-               time_out = 7200)
+               time_out = BCFG$request_timeout_s %||% 7200)
   if (!is.null(user)) args$user <- user
   out <- tryCatch(do.call(ecmwfr::wf_request, args), error = function(e) e)
   if (inherits(out, "error")) { msg("  ! ", job$id, ": ", conditionMessage(out)); return(FALSE) }
@@ -279,7 +301,7 @@ fetch_jobs <- function(jobs, user) {
   t0 <- Sys.time()
   nf   <- vapply(todo, function(j) j$nfields, numeric(1))
   done_f <- 0
-  n_fail <- 0L; streak <- 0L
+  n_fail <- 0L; streak <- 0L; last_note <- Sys.time()
 
   notify_start(sprintf(
     "%d of %d jobs to fetch (%s already present).\nYears %d-%d, ~%s of fields.",
@@ -312,12 +334,16 @@ fetch_jobs <- function(jobs, user) {
       }
     }
 
-    if (i %% BCFG$notify_every == 0 && i < length(todo)) {
+    gap_min <- as.numeric(difftime(Sys.time(), last_note, units = "mins"))
+    due <- (i %% BCFG$notify_every == 0) ||
+           (gap_min >= (BCFG$notify_max_gap_min %||% Inf))
+    if (due && i < length(todo)) {
       notify_progress(sprintf(
         "%d/%d jobs, %.0f%% of fields.\nElapsed %s, ~%s left.\n%s\n%s failures so far.",
         i, length(todo), 100 * done_f / sum(nf), fmt_dur(el * 60),
         if (is.na(rem)) "?" else fmt_dur(rem * 60),
         disk_line(), n_fail))
+      last_note <- Sys.time()
     }
   }
 

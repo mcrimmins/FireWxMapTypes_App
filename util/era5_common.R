@@ -205,8 +205,13 @@ notify <- function(body, title = NULL, priority = "default", tags = NULL) {
 notify_start <- function(body)
   notify(body, title = "FireWx build started",  priority = "low",
          tags = "hourglass_flowing_sand")
+# "low", not "min". MEASURED 2026-08-11: ntfy accepted and stored two progress
+# messages at priority 1, and neither surfaced on the phone — min priority is
+# delivered silently and is only visible if you open the app and look. A
+# heartbeat whose whole purpose is that its ABSENCE is the alarm has to be
+# visible when present. "low" shows in the tray without sound or vibration.
 notify_progress <- function(body)
-  notify(body, title = "FireWx build progress", priority = "min",
+  notify(body, title = "FireWx build progress", priority = "low",
          tags = "chart_with_upwards_trend")
 notify_warn <- function(body)
   notify(body, title = "FireWx build warning",  priority = "high",
