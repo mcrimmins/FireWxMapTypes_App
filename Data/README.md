@@ -59,15 +59,41 @@ Derived from **NCEP-DOE Reanalysis 2** (NOAA PSL), 1992–2020.
 
 ### FODthin.Rdata
 
-Thinned subset of a wildfire occurrence database — most likely the **Fire Program
-Analysis Fire-Occurrence Database (FPA-FOD)**, Short (USFS Research Data Archive).
+Thinned subset of the **Fire Program Analysis Fire-Occurrence Database (FPA-FOD)**,
+Short, USDA Forest Service Research Data Archive.
 
-- Source: TODO — confirm and record the exact dataset and version DOI.
-- Thinning criteria: TODO — record the filters applied (date range, fire size
-  threshold, geographic extent, columns retained). Commit `3dd0a4c` "thinned data
-  files" is the relevant history.
-- Object name(s) loaded by `load()`: TODO
-- Generating script: TODO — path under `util/`, if one exists.
+- Source (current): Short, Karen C. 2026. *Spatial wildfire occurrence data for the
+  United States, 1992-2024 [FPA_FOD_20260615]*. 7th Edition. Fort Collins, CO: Forest
+  Service Research Data Archive. https://doi.org/10.2737/RDS-2013-0009.7
+- Source (what shipped with the app through Aug 2026): 6th Edition, 1992-2020
+  [FPA_FOD_20221014], https://doi.org/10.2737/RDS-2013-0009.6 — this is the edition
+  the "1992-2020" wording in `app.R` refers to.
+- Format downloaded: `RDS-2013-0009.7_Data_Format3_GPKG.zip` (~185 MB). The same
+  data is also published as ACCDB, file geodatabase, and SpatiaLite.
+- Thinning criteria: rows filtered to the configured year range, geometry converted
+  to plain coordinates and dropped, and these 11 columns kept — `FIRE_YEAR`,
+  `DISCOVERY_DATE`, `DISCOVERY_DOY`, `NWCG_CAUSE_CLASSIFICATION`, `CONT_DATE`,
+  `CONT_DOY`, `FIRE_SIZE`, `FIRE_SIZE_CLASS`, `LATITUDE`, `LONGITUDE`, `STATE`.
+  No fire-size or geographic filter is applied.
+- **Coordinates:** the 6th edition and earlier carried `LATITUDE`/`LONGITUDE` as
+  ordinary attribute columns. The 7th edition dropped them — the fire location now
+  exists only in the `geom` blob of the `Fires` layer, so the two columns are
+  recovered with `sf::st_coordinates()` and re-attached under the old names. The
+  data is NAD83 geographic, so the values are equivalent to what the old columns
+  held (NAD83 vs. WGS84 differ by ~1 m here).
+- Object name loaded by `load()`: `fc` (a plain `data.frame`).
+- Generating script: `util/getFOD.R` → `fod_main()`. Downloads, unzips, reads the
+  `Fires` layer from the GeoPackage — via `sf` when geometry is needed, via RSQLite
+  when it isn't — thins, and writes this file. Settings live in the `FODCFG` list at
+  the top of that script. The geometry read is chunked one year at a time to keep
+  peak memory in the low hundreds of MB (`FODCFG$chunk_by_year`).
+- Superseded: `util/thinFOD.R` did the same thinning but read a local
+  `./oldVersions/FOD.RData` rather than fetching the archive. Commit `3dd0a4c`
+  "thinned data files" is the relevant history.
+
+**Coverage mismatch:** the 7th edition runs through 2024, but the CPC precipitation
+and NCEP R2 height grids above stop at 2020. Fires after 2020 have no matching
+weather layer until those grids are rebuilt (the ERA5 migration covers this).
 
 ---
 
@@ -90,4 +116,4 @@ external drive) so a collaborator can skip regeneration.
 - Coordinate reference system: TODO — confirm and record for the GeoTIFFs.
 - If any of these files are regenerated with a different scaling, extent, or CRS, the
   plotting code in `app.R` and `util/` will need matching updates.
-- Last verified: 2026-08-07
+- Last verified: 2026-08-10
