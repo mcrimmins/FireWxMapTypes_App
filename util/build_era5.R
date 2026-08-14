@@ -456,6 +456,21 @@ aggregate_variable <- function(v) {
   paths <- file.path(BCFG$raw_dir, sprintf("%s_%d.nc", v$id, BCFG$years))
   have  <- file.exists(paths)
   if (!any(have)) { msg("  no files for ", v$id); return(NULL) }
+
+  # REFUSE to aggregate a partial variable.
+  #
+  # saveRDS() below overwrites unconditionally, so aggregating 8 of 33 years
+  # DESTROYS a complete 12,053-day file built by an earlier run and replaces it
+  # with a 2,900-day one. That is exactly what happened on 2026-08-14: the
+  # archive was complete, and a restart was part-way through rebuilding it when
+  # it was caught. A partial aggregate has no value — it exists only to be
+  # overwritten later — so the safe behaviour is to skip and say so.
+  if (!all(have)) {
+    msg("  ", v$id, ": ", sum(!have), " of ", length(have),
+        " year(s) missing — SKIPPING aggregation (will not overwrite ",
+        "existing daily file with a partial one)")
+    return(NULL)
+  }
   paths <- paths[have]
 
   acc <- setNames(vector("list", length(v$stats)), v$stats)
@@ -546,6 +561,30 @@ aggregate_all <- function() {
   }))
 }
 
+# ============================ completion marker ==============================
+
+# Phase 1 is "done" when every request has been fetched AND aggregated. After
+# that the .nc intermediates are deleted, so their absence can no longer be used
+# to decide what still needs downloading. This file is the record.
+phase1_marker <- function() file.path(BCFG$raw_dir, "phase1_complete.txt")
+
+phase1_complete <- function() file.exists(phase1_marker())
+
+write_phase1_marker <- function(rep) {
+  lines <- c(
+    sprintf("completed   = %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")),
+    sprintf("years       = %d-%d", min(BCFG$years), max(BCFG$years)),
+    sprintf("requests    = %d", length(build_jobs())),
+    sprintf("grid        = %.2f deg", BCFG$grid[1]),
+    sprintf("tz_shift_h  = %d", BCFG$tz_shift_h),
+    sprintf("builder     = build_era5.R"))
+  if (!is.null(rep))
+    lines <- c(lines, sprintf("%-11s = %d days",
+                              paste0(rep$variable, rep$stat), rep$ndays))
+  writeLines(lines, phase1_marker())
+  invisible(lines)
+}
+
 # ============================ driver =========================================
 
 build_main <- function() {
@@ -555,6 +594,23 @@ build_main <- function() {
   t_start <- Sys.time()
   for (d in c(BCFG$raw_dir, BCFG$daily_dir))
     if (!dir.exists(d)) dir.create(d, recursive = TRUE)
+
+  # THE LOOP GUARD. Resumability is keyed on which .nc files exist — but a
+  # complete run DELETES them (keep_hourly = FALSE). So after finishing, the
+  # next start saw an empty raw_dir, concluded 198 requests were missing, and
+  # re-downloaded the entire record. Exit 2 -> systemd restart -> download ->
+  # aggregate -> delete -> exit 2, around and around for three days.
+  #
+  # The marker is the durable record that the .nc files are gone BECAUSE the
+  # work finished, not because it never started.
+  if (phase1_complete() && !isTRUE(BCFG$force_rebuild)) {
+    msg("Phase 1 is already complete — ", phase1_marker())
+    for (l in readLines(phase1_marker(), warn = FALSE)) msg("  ", l)
+    msg("Nothing to do. To rebuild: delete that file, or set ",
+        "BCFG$force_rebuild <- TRUE.")
+    return(invisible("complete"))
+  }
+
   jobs <- build_jobs()
 
   n_by <- table(vapply(jobs, `[[`, character(1), "kind"))
@@ -622,13 +678,29 @@ build_main <- function() {
     cat("\n----- DAILY AGGREGATES -----\n"); print(rep, row.names = FALSE)
     utils::write.csv(rep, file.path(BCFG$daily_dir, "manifest.csv"), row.names = FALSE)
   }
-  if (!isTRUE(BCFG$keep_hourly)) {
-    unlink(list.files(BCFG$raw_dir, pattern = "^(gust|cape|t2|d2|pwat|soilw)_\\d{4}\\.nc$",
-                      full.names = TRUE))
-    msg("Deleted hourly intermediates (keep_hourly = FALSE).")
-  }
-
+  # Completeness is measured BEFORE anything is deleted. It used to be measured
+  # after, so a fully successful run counted the intermediates it had just
+  # removed as "missing", reported 198 outstanding, and exited 2 — which systemd
+  # dutifully treated as a reason to start the whole thing again.
   missing <- length(pending_jobs(jobs))
+  complete <- (missing == 0)
+
+  if (complete) {
+    if (!isTRUE(BCFG$keep_hourly)) {
+      unlink(list.files(BCFG$raw_dir,
+                        pattern = "^(gust|cape|t2|d2|pwat|soilw)_\\d{4}\\.nc$",
+                        full.names = TRUE))
+      msg("Deleted hourly intermediates (keep_hourly = FALSE).")
+    }
+    write_phase1_marker(rep)
+    msg("Wrote completion marker: ", phase1_marker())
+  } else if (!isTRUE(BCFG$keep_hourly)) {
+    # Deleting intermediates from an incomplete run throws away real progress:
+    # every deleted file has to be re-requested from a queue that is thousands
+    # deep. Keep them until the record is whole.
+    msg("Keeping hourly intermediates — ", missing,
+        " request(s) still outstanding.")
+  }
   el <- as.numeric(difftime(Sys.time(), t_start, units = "secs"))
   body <- sprintf("Years %d-%d in %s.\n%d/%d requests present.\n%s\n%s",
                   min(BCFG$years), max(BCFG$years), fmt_dur(el),

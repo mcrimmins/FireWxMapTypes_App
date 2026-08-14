@@ -79,6 +79,17 @@ if (BCFG$dry_run) { msg("=== dry run complete ==="); quit(status = 0L, save = "n
 # build_main() returns normally even when requests are missing, because failing
 # a single CDS request is routine. Exiting non-zero here is what lets systemd's
 # Restart=on-failure act as the retry loop.
+#
+# The marker is checked FIRST and takes precedence. Counting pending_jobs() on
+# its own was the second half of the 2026-08-14 loop: once a complete run had
+# deleted the intermediates, that count came back as "198 outstanding" for a
+# finished archive, this exited 2, and systemd started it all over again.
+if (phase1_complete()) {
+  msg("=== phase 1 COMPLETE in ",
+      fmt_dur(as.numeric(difftime(Sys.time(), t0, units = "secs"))), " ===")
+  quit(status = 0L, save = "no")
+}
+
 still <- length(pending_jobs(build_jobs()))
 msg("=== phase 1 run finished in ",
     fmt_dur(as.numeric(difftime(Sys.time(), t0, units = "secs"))),
