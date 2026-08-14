@@ -1,73 +1,105 @@
 <#
 build/pull_results.ps1
 -------------------------------------------------------------------------------
-Pull finished data files from the build server to this laptop.
+Pull build products from the M710q to this laptop. RUN THIS ON THE LAPTOP.
 
-    .\build\pull_results.ps1                       # packed qs2 only (~200 MB)
-    .\build\pull_results.ps1 -What daily           # daily .rds (~2 GB)
-    .\build\pull_results.ps1 -WhatIf               # list what would transfer
+    .\build\pull_results.ps1                  # daily .rds  (~2.2 GB) - phase 1 output
+    .\build\pull_results.ps1 -What hgt        # pressure-level .nc + orography (~350 MB)
+    .\build\pull_results.ps1 -What qs2        # packed grids (phase 2 output, ~200 MB)
+    .\build\pull_results.ps1 -What all
+    .\build\pull_results.ps1 -VerifyOnly      # compare sizes, transfer nothing
 
-The laptop pulls; the server never pushes. That means the server holds no
-credentials for this machine and does not care whether the laptop is on, asleep
-or somewhere else entirely — which for a box whose job is to run unattended for
-a day is the right way round.
+The laptop pulls; the server never pushes. The server holds no credentials for
+this machine and does not care whether it is awake — which for a box whose job
+is to run unattended is the right way round.
 
-Uses Windows' built-in OpenSSH. If you have rsync (Git Bash, WSL, or MSYS2 on
-PATH) it is used instead, which makes the transfer resumable and incremental.
+Uses Windows' built-in OpenSSH (scp). Nothing to install. Over a gigabit LAN the
+2.2 GB set takes a couple of minutes.
+
+FIRST TIME: set up a key so you are not typing a password per file set.
+    ssh-keygen -t ed25519                     # if you do not already have one
+    type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh crimmins@192.168.0.234 `
+        "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
 -------------------------------------------------------------------------------
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding()]
 param(
-    # Host as configured in %USERPROFILE%\.ssh\config, or user@address.
-    [string] $Server = "firewx-build",
-    # Repo path on the server.
-    [string] $RemoteRepo = "~/FireWxMapTypes_App",
-    # qs2 = packed deliverables; daily = phase 1 intermediates; all = both.
-    [ValidateSet("qs2", "daily", "all")]
-    [string] $What = "qs2"
+    [string] $Server     = "crimmins@192.168.0.234",
+    # Path on the server, relative to the remote home directory.
+    [string] $RemoteRepo = "RProjects/FireWxMapTypes_App",
+    [ValidateSet("daily", "hgt", "qs2", "all")]
+    [string] $What       = "daily",
+    [switch] $VerifyOnly
 )
 
 $ErrorActionPreference = "Stop"
 $LocalRepo = Split-Path -Parent $PSScriptRoot
 
+# from  = remote directory, relative to the repo root
+# glob  = which files in it
+# to    = local subdirectory, relative to the repo root
 $sets = @{
-    qs2   = @(@{ from = "Data/grids/";           to = "Data\grids" },
-              @{ from = "Data/fod/";             to = "Data\fod" })
-    daily = @(@{ from = "Data/era5_raw/daily/";  to = "Data\era5_raw\daily" })
+    daily = @(@{ from = "Data/era5_raw/daily"; glob = "*";     to = "Data\era5_raw\daily" })
+    hgt   = @(@{ from = "Data/era5_raw";       glob = "*.nc";  to = "Data\era5_raw" },
+              @{ from = "Data/era5_raw";       glob = "*.txt"; to = "Data\era5_raw" })
+    qs2   = @(@{ from = "Data/grids";          glob = "*";     to = "Data\grids" },
+              @{ from = "Data/fod";            glob = "*";     to = "Data\fod" })
 }
-$jobs = switch ($What) {
-    "qs2"   { $sets.qs2 }
-    "daily" { $sets.daily }
-    "all"   { $sets.qs2 + $sets.daily }
-}
-
-$rsync = Get-Command rsync -ErrorAction SilentlyContinue
+$jobs = if ($What -eq "all") { $sets.daily + $sets.hgt + $sets.qs2 } else { $sets[$What] }
 
 foreach ($j in $jobs) {
     $dest = Join-Path $LocalRepo $j.to
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    $src = "${Server}:$RemoteRepo/$($j.from)"
 
-    if ($PSCmdlet.ShouldProcess($src, "pull to $dest")) {
-        Write-Host "`n== $($j.from) -> $($j.to)" -ForegroundColor Cyan
-        if ($rsync) {
-            # --partial keeps a half-transferred file so a dropped Wi-Fi link
-            # resumes rather than restarts. -c compares checksums, not mtimes,
-            # which matters because a rebuilt file can have the same size.
-            $unix = ($dest -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
-            & rsync -avz --partial --progress --checksum $src $unix
-        } else {
-            # scp -p preserves timestamps; there is no incremental mode, so this
-            # re-copies everything each time. Fine for ~200 MB over a LAN.
-            & scp -rp $src $dest
+    Write-Host "`n=== $($j.from)/$($j.glob)  ->  $($j.to)" -ForegroundColor Cyan
+
+    # Ask the server what should be there. GNU find -printf is fine on Ubuntu.
+    # This doubles as the existence check: an empty result means the phase that
+    # produces these files has not run yet, which is worth saying plainly rather
+    # than letting scp fail with "No such file or directory".
+    $remoteDir = "$RemoteRepo/$($j.from)"
+    $remote = ssh $Server "cd '$remoteDir' 2>/dev/null && find . -maxdepth 1 -type f -name '$($j.glob)' -printf '%f\t%s\n' | sort"
+    if (-not $remote) {
+        Write-Host "  nothing on the server yet - skipping" -ForegroundColor DarkYellow
+        continue
+    }
+
+    $remoteFiles = @{}
+    foreach ($line in $remote) {
+        $p = $line -split "`t"
+        if ($p.Count -eq 2) { $remoteFiles[$p[0]] = [int64]$p[1] }
+    }
+    $totalMB = [math]::Round(($remoteFiles.Values | Measure-Object -Sum).Sum / 1MB, 1)
+    Write-Host "  $($remoteFiles.Count) file(s), $totalMB MB on the server"
+
+    if (-not $VerifyOnly) {
+        # One scp per set, not per file: each invocation is a separate
+        # authentication, and with a password rather than a key that is a prompt
+        # each time.
+        & scp -p "${Server}:$RemoteRepo/$($j.from)/$($j.glob)" $dest
+        if ($LASTEXITCODE -ne 0) { throw "scp failed for $($j.from)" }
+    }
+
+    # Compare byte-for-byte sizes. scp reports success on a truncated transfer
+    # more readily than you would like, and these files are large enough that a
+    # silent short write is a real possibility.
+    $rows = foreach ($name in ($remoteFiles.Keys | Sort-Object)) {
+        $lf = Join-Path $dest $name
+        $ls = if (Test-Path $lf) { (Get-Item $lf).Length } else { 0 }
+        [pscustomobject]@{
+            File     = $name
+            RemoteMB = [math]::Round($remoteFiles[$name] / 1MB, 1)
+            LocalMB  = [math]::Round($ls / 1MB, 1)
+            OK       = ($ls -eq $remoteFiles[$name])
         }
-        if ($LASTEXITCODE -ne 0) { throw "transfer failed for $($j.from)" }
+    }
+    $rows | Format-Table -AutoSize
+    $bad = @($rows | Where-Object { -not $_.OK })
+    if ($bad.Count) {
+        Write-Host "  $($bad.Count) file(s) MISSING OR TRUNCATED - re-run" -ForegroundColor Red
+    } else {
+        Write-Host "  all files match" -ForegroundColor Green
     }
 }
 
 Write-Host "`nDone." -ForegroundColor Green
-Get-ChildItem -Recurse -Path (Join-Path $LocalRepo "Data") -Include *.qs2 -File |
-    Select-Object @{n='File';e={$_.Name}},
-                  @{n='MB';e={[math]::Round($_.Length / 1MB, 1)}},
-                  LastWriteTime |
-    Format-Table -AutoSize
