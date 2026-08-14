@@ -257,10 +257,34 @@ as the heights, and the app can carry fire-weather fields it has never had.
 | Volumetric soil water L1 | `volumetric_soil_water_layer_1` | `daily_mean` | int8 @ 0.0025 m³ m⁻³ | fuel dryness from the land surface |
 | *(surface geopotential)* | `geopotential`, static | — | not shipped | the D6 mask |
 
-**CAPE needs int16 or a non-linear transform.** It is strongly right-skewed (0 to 5,000+ J kg⁻¹);
-int8 linear at 20 J kg⁻¹ steps tops out at 2,540 and would clip real values. Either store int16
-(76 MB resident) or int8 on a square-root scale. Decide in phase 2 and record the transform in
-`meta`.
+**CAPE: clip at 6,000 J kg⁻¹ and store uint8 on a square-root scale. CLOSED by
+measurement, 2026-08-14.** Draft 3 offered "int16 or a non-linear transform" and left it to
+phase 2. The full 1992–2024 archive settles it, and removes the int16 option outright.
+
+Measured over 40,028,013 cell-days (`capemax_daily.rds`):
+
+| quantile | 50% | 90% | 99% | 99.9% | 99.999% | max |
+|---|---|---|---|---|---|---|
+| J kg⁻¹ | 19.6 | 1,090 | 3,250 | 4,949 | 9,324 | **35,252** |
+
+- **int16 is impossible.** It tops out at 32,767 and the data reaches 35,252.
+- **The tail is not physical.** 83 cell-days exceed 12,000 J kg⁻¹ — 0.0002%. Their locations
+  disqualify them: 35,252 in the open North Pacific (−138, 50) in June 1993; 17,207 in the Gulf of
+  Alaska in April 2014; 24,057 off south Texas in **January** 2018. Those are stable, cold
+  environments. Observed CAPE peaks near 6,000–8,000 J kg⁻¹ in the most extreme Great Plains and
+  tropical soundings, and a 1° cell mean should read *lower* than a point sounding, not five times
+  higher. These are single corrupt hourly values propagating through a daily **maximum**, roughly
+  2.5 per year across the domain.
+- **Clip at 6,000.** That is above the 99.9th percentile (4,949) and above any defensible physical
+  value, so it discards artifacts and no signal.
+- **Encode `byte = round(255 * sqrt(min(x, 6000) / 6000))`**, decode `x = 6000 * (byte/255)^2`.
+  Resolution is ~0.1 J kg⁻¹ near zero and ~47 J kg⁻¹ at the ceiling — finest exactly where the
+  distribution is dense, and coarsest where 47 J kg⁻¹ is noise. 1 byte per cell-day, so 40 MB
+  resident rather than int16's 76 MB.
+- Record `dtype = "uint8_sqrt"`, `cap = 6000` in `meta`, and note the clip in `Data/README.md`.
+
+Same measurement pass flagged `soilw` at a minimum of −0.0099 m³ m⁻³ — server-side interpolation
+from 0.25° undershooting a hard floor at zero. **Clamp soil water to [0, 1] before quantising.**
 
 Max-T with min-Td approximates peak-afternoon dryness. Honest caveat: minimum RH is not directly
 available and the two extremes do not always coincide, so this slightly overstates dryness. It is a
@@ -437,6 +461,13 @@ erosion. Measured: 0.000%.
 
 Phase 1 moved to the front because it has days of wall-clock latency that parallelise with
 everything else. Phase 0.5 is new and independent of the migration entirely.
+
+**Phase 1 is COMPLETE as of 2026-08-14.** `Data/era5_raw/daily/` holds seven daily statistics at
+12,053 days × 3,321 cells (1992-01-01 through 2024-12-30; the first and last local days are dropped
+for want of a neighbouring file), plus 33 pressure-level `.nc` and `orography.nc`. Completion is
+recorded in `Data/era5_raw/phase1_complete.txt` — that marker is load-bearing, not decorative: the
+hourly intermediates are deleted on success, so their absence can no longer be used to work out
+what still needs downloading. See `SERVER_SETUP.md`.
 
 | # | Phase | Detail | Est. | Blocked by |
 |---|---|---|---|---|
